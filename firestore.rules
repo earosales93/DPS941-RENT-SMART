@@ -1,0 +1,69 @@
+rules_version = '2';
+
+// ============================================================================
+//  RENT SMART · Reglas de seguridad de Cloud Firestore
+// ============================================================================
+// El control de acceso vive aquí, en el servidor, y no en la aplicación.
+// Aunque alguien modificara el código del cliente, estas reglas se siguen
+// aplicando: es la diferencia entre validar y autorizar.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function autenticado() {
+      return request.auth != null;
+    }
+
+    function esDueno(uid) {
+      return autenticado() && request.auth.uid == uid;
+    }
+
+    function esAdministrador() {
+      return autenticado() &&
+        exists(/databases/$(database)/documents/usuarios/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol == 'administrador';
+    }
+
+    // --- Perfiles -----------------------------------------------------------
+    // Cada quien lee y escribe únicamente su propio documento. El campo rol
+    // no se puede elevar desde la aplicación.
+    match /usuarios/{uid} {
+      allow read: if esDueno(uid) || esAdministrador();
+      allow create: if esDueno(uid) && request.resource.data.rol == 'cliente';
+      allow update: if (esDueno(uid) && request.resource.data.rol == resource.data.rol)
+                    || esAdministrador();
+      allow delete: if false;
+    }
+
+    // --- Catálogo de vehículos ---------------------------------------------
+    // Lectura para cualquier usuario autenticado; escritura solo administrador.
+    match /vehiculos/{id} {
+      allow read: if autenticado();
+      allow write: if esAdministrador();
+    }
+
+    // --- Reservas -----------------------------------------------------------
+    // Un cliente solo ve y modifica las suyas. El uid del documento debe
+    // coincidir con quien hace la petición, y no puede reasignarse después.
+    match /reservas/{id} {
+      allow read: if esDueno(resource.data.uid) || esAdministrador();
+      allow create: if esDueno(request.resource.data.uid)
+                    && request.resource.data.estado == 'pendiente'
+                    && request.resource.data.total is number
+                    && request.resource.data.total >= 0;
+      allow update: if (esDueno(resource.data.uid)
+                        && request.resource.data.uid == resource.data.uid)
+                    || esAdministrador();
+      allow delete: if false;   // una reserva se cancela, no se borra
+    }
+
+    // --- Bitácora de actividad ---------------------------------------------
+    // Solo se puede añadir y leer lo propio: un registro que se puede editar
+    // no sirve como evidencia.
+    match /actividad/{id} {
+      allow read: if esDueno(resource.data.uid) || esAdministrador();
+      allow create: if esDueno(request.resource.data.uid);
+      allow update, delete: if false;
+    }
+  }
+}
